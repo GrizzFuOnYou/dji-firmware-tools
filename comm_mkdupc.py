@@ -1,11 +1,77 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-""" DUPC Packet Builder.
+"""
+DUML Packet Builder - Create properly formatted DJI communication packets.
 
- This script takes header fields and payload, and builds a proper DUPC
- packet from them.
+OVERVIEW:
+    This tool builds DUPC/DUML (DJI Unified Packet Container / Message Layer)
+    packets from command-line parameters. The generated packets can be sent
+    to DJI devices for communication, testing, or firmware interaction.
 
+    DUML is DJI's proprietary protocol for inter-component communication.
+    All major drone subsystems (flight controller, camera, gimbal, etc.)
+    communicate using this protocol, whether over UART, USB, or wireless links.
+
+    This tool is typically used together with comm_serialtalk.py for sending
+    packets, or to generate test data for protocol analysis.
+
+KEY CONCEPTS:
+    - DUPC: DJI Unified Packet Container - the framing layer
+    - DUML: DJI Unified Message Layer - the message format
+    - Command Set: Category grouping (General=0, Special=1, Camera=2, FC=3, etc.)
+    - Command ID: Specific operation within a set
+    - Module Type: Component type (Camera, FC, Gimbal, RC, etc.)
+    - Sender/Receiver: Routing information for packet delivery
+    - Sequence Number: For matching requests to responses
+    - ACK Type: Request, ACK, or no-ACK mode
+
+USAGE EXAMPLES:
+    Build a simple command packet:
+        ./comm_mkdupc.py -s FC -c 3 -i 1 -o packet.bin
+
+    Build packet with payload data:
+        ./comm_mkdupc.py -c 0 -i 1 -d "0102030405" -o test.bin
+
+    Show packet structure without saving:
+        ./comm_mkdupc.py -v -c 1 -i 2
+
+PACKET STRUCTURE:
+    DUML packets (type 0x55) have this format:
+    
+    +---------------------------+
+    | 0x55 (start byte)         | 1 byte
+    +---------------------------+
+    | Length (10 bits)          | 2 bytes (includes header + trailer)
+    | + Protocol version (6 b)  |
+    +---------------------------+
+    | Header CRC8               | 1 byte - checksum of first 3 bytes
+    +---------------------------+
+    | Sender ID                 | 1 byte (type << 5 | index)
+    +---------------------------+
+    | Receiver ID               | 1 byte (type << 5 | index)
+    +---------------------------+
+    | Sequence number           | 2 bytes (little-endian)
+    +---------------------------+
+    | Command Type              | 1 byte (ACK type, encryption, etc.)
+    +---------------------------+
+    | Command Set               | 1 byte
+    +---------------------------+
+    | Command ID                | 1 byte
+    +---------------------------+
+    | Payload                   | Variable length
+    +---------------------------+
+    | CRC16                     | 2 bytes (little-endian)
+    +---------------------------+
+
+DEPENDENCIES:
+    - comm_dat2pcap: For packet CRC calculations and parsing utilities
+
+AUTHORS:
+    Mefistotelis @ Original Gangsters
+
+LICENSE:
+    GPL-3.0 - See LICENSE file for details
 """
 
 # Copyright (C) 2018 Mefistotelis <mefistotelis@gmail.com>

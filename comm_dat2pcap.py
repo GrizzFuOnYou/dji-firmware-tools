@@ -1,15 +1,106 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-""" Raw DUPC packets to PCap converter.
+"""
+DUPC/DUML to PCap Converter - Convert raw DJI packets to Wireshark-readable format.
 
-This tool parses Dji Unified Packet Container packets from input file,
-and puts the results into PCap file. Checksums within the packets are checked
-and only valid packets are accepted.
+OVERVIEW:
+    This tool converts raw DUPC (DJI Unified Packet Container) / DUML (DJI Unified
+    Message Layer) packet captures into PCap (Packet Capture) format. PCap files
+    can be analyzed with Wireshark and other network analysis tools.
 
-The script can also behave as a library to use the parser for other tasks.
+    DJI drones communicate using a custom protocol called DUML. This protocol is
+    used for communication between:
+    - Flight controller and camera
+    - Drone and remote controller
+    - Ground station software and aircraft
+    - Internal components (over I2C/UART)
 
-PCap files can be used with WireShark and other tools for packets analysis.
+    Raw packet captures can come from:
+    - Serial port sniffing (UART between components)
+    - USB traffic captures
+    - Flight log DAT files
+    - Network proxy captures
+
+KEY CONCEPTS:
+    - DUPC: DJI Unified Packet Container - the outer framing protocol
+    - DUML: DJI Unified Message Layer - the message protocol inside DUPC
+    - Packet Type 0x55: Standard DUML packet (most common)
+    - Packet Type 0xAB: Alternative packet format
+    - CRC16: Packet checksum (non-standard algorithm, seed 0x3692)
+    - Header CRC: 8-bit header checksum (seed 0x77)
+
+USAGE EXAMPLES:
+    Convert raw DAT file to PCap:
+        ./comm_dat2pcap.py -d flight_log.DAT -p output.pcap
+
+    Convert with verbose output:
+        ./comm_dat2pcap.py -vvv -d capture.bin
+
+    Store damaged packets too:
+        ./comm_dat2pcap.py -e -d capture.bin
+
+WORKFLOW POSITION:
+    This tool is used for protocol analysis:
+
+    [Serial Capture] --> comm_dat2pcap.py (this tool)
+         |
+         +--> [capture.pcap] --> Wireshark with dji_duml_dissector.lua
+                   |
+                   +--> Analyze packet contents
+                   +--> Reverse engineer protocols
+                   +--> Debug communication issues
+
+PACKET FORMAT:
+    Type 0x55 packets (standard DUML):
+    
+    +---------------------------+
+    | Start byte (0x55)         | 1 byte
+    +---------------------------+
+    | Length (12 bits) + Ver    | 2 bytes (length includes header + CRC)
+    +---------------------------+
+    | Header CRC8               | 1 byte
+    +---------------------------+
+    | Sender/Receiver IDs       | 2 bytes
+    +---------------------------+
+    | Sequence Number           | 2 bytes
+    +---------------------------+
+    | Command Type              | 1 byte
+    +---------------------------+
+    | Command Set               | 1 byte
+    +---------------------------+
+    | Command ID                | 1 byte
+    +---------------------------+
+    | Payload Data              | Variable length
+    +---------------------------+
+    | CRC16                     | 2 bytes
+    +---------------------------+
+
+    Type 0xAB packets (alternative format):
+    - Simpler structure with 8-bit length
+    - Single-byte checksum
+    - Used for specific communication paths
+
+PCAP OUTPUT:
+    The output PCap file uses DLT_USER0 (147) as the data link type.
+    To view in Wireshark, install the dji_duml_dissector.lua plugin from:
+    comm_dissector/wireshark/dji-dumlv1-proto.lua
+
+PACKET VALIDATION:
+    Each packet is validated by checking:
+    1. Start byte (0x55 or 0xAB)
+    2. Header CRC (for 0x55 packets)
+    3. Full packet CRC
+    Only valid packets are included in output (unless -e flag is used).
+
+DEPENDENCIES:
+    - Standard Python 3 libraries only
+
+AUTHORS:
+    Mefistotelis @ Original Gangsters
+
+LICENSE:
+    GPL-3.0 - See LICENSE file for details
 """
 
 # Copyright (C) 2017 Mefistotelis <mefistotelis@gmail.com>

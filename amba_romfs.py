@@ -1,7 +1,93 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-""" Ambarella Firmware ROMFS tool.
+"""
+Ambarella ROMFS Filesystem Tool - Extract and create ROMFS partitions.
+
+OVERVIEW:
+    This tool handles the ROMFS (Read-Only Memory File System) format used
+    in Ambarella camera firmware partitions. ROMFS is a simple, space-efficient
+    filesystem designed for embedded systems that don't need write capability.
+
+    The partition extracted by amba_fwpak.py as "part_rfs.a9s" often contains
+    a ROMFS filesystem. This tool extracts individual files from it or creates
+    new ROMFS images from a directory of files.
+
+    ROMFS stores files sequentially with fixed-size headers and 2048-byte
+    alignment. The format is simple but effective for firmware purposes.
+
+KEY CONCEPTS:
+    - ROMFSPartitionHeader: Main header with file count and magic (0x66FC328A)
+    - ROMFSFileEntry: Per-file header with name, offset, length, magic (0x2387AB76)
+    - Padding: All entries aligned to 2048 bytes (with 0xFF padding)
+    - File Content: Stored after all headers, also 2048-byte aligned
+
+USAGE EXAMPLES:
+    Extract files from ROMFS partition:
+        ./amba_romfs.py -p part_rfs.a9s -x
+
+    Search for files in corrupted ROMFS (brute-force):
+        ./amba_romfs.py -p part_rfs.a9s -s
+
+    Create ROMFS from directory:
+        ./amba_romfs.py -p new_rfs.a9s -a
+
+WORKFLOW POSITION:
+    This tool handles the root filesystem within Ambarella camera modules:
+
+    [DJI Firmware .BIN] --> dji_xv4_fwcon.py (extract container)
+         |
+         +--> [Module m0100] --> amba_fwpak.py
+                   |
+                   +--> [part_rfs.a9s] --> amba_romfs.py (this tool)
+                             |
+                             +--> [config.ini] - Configuration files
+                             +--> [scripts/] - Boot scripts
+                             +--> [data/] - Static data files
+
+FILE FORMAT:
+    ROMFS partitions have this structure:
+    
+    +-------------------------------+
+    | ROMFSPartitionHeader (2048 b) |  File count, magic 0x66FC328A
+    |   - file_count (4 bytes)      |
+    |   - magic (4 bytes)           |
+    |   - padding (2040 bytes, 0xFF)|
+    +-------------------------------+
+    | ROMFSFileEntry[0] (128 bytes) |  First file metadata
+    |   - filename (116 bytes)      |
+    |   - offset (4 bytes)          |
+    |   - length (4 bytes)          |
+    |   - magic (4 bytes)           |  0x2387AB76
+    +-------------------------------+
+    | ROMFSFileEntry[1] (128 bytes) |  Second file metadata
+    +-------------------------------+
+    | ... more entries ...          |
+    +-------------------------------+
+    | Padding to 2048 boundary      |  0xFF bytes
+    +-------------------------------+
+    | File 0 Content                |
+    +-------------------------------+
+    | Padding to 2048 boundary      |
+    +-------------------------------+
+    | File 1 Content                |
+    +-------------------------------+
+    | ... more file content ...     |
+    +-------------------------------+
+
+PADDING NOTES:
+    The 2048-byte alignment is unusual - even if a file length is an exact
+    multiple of 2048, an additional 2048 bytes of padding is added. This
+    wastes some space but simplifies the parsing logic.
+
+DEPENDENCIES:
+    - Standard Python 3 libraries only
+
+AUTHORS:
+    Mefistotelis @ Original Gangsters
+
+LICENSE:
+    GPL-3.0 - See LICENSE file for details
 """
 
 # Copyright (C) 2016,2017 Mefistotelis <mefistotelis@gmail.com>

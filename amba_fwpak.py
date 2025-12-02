@@ -1,9 +1,102 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-""" Ambarella Firmware Packer tool.
+"""
+Ambarella Firmware Packer Tool - Extract and repack Ambarella camera firmware.
 
-Extracts and re-packs partitions from Ambarella firmware module.
+OVERVIEW:
+    This tool handles Ambarella firmware module files used in DJI camera systems.
+    Ambarella is a semiconductor company that provides the main camera SoC (System
+    on Chip) for many DJI products, particularly the Phantom 3/4, Mavic series,
+    and other camera-equipped drones.
+
+    The Ambarella firmware module (typically m0100 in DJI packages) contains the
+    camera operating system, DSP code, and root filesystem. This tool extracts
+    these partitions so they can be analyzed and modified.
+
+    The module uses a custom partition format with CRC checksums for integrity
+    verification. Each partition contains a specific type of data (system software,
+    DSP microcode, Linux kernel, root filesystem, etc.).
+
+KEY CONCEPTS:
+    - Partition: A section of the firmware (sys, dsp_fw, rom_fw, lnx, rfs)
+    - FwModA9Header: Main header with model name, version, and total CRC
+    - FwModEntry: Describes each partition's size and cumulative CRC
+    - FwModPartHeader: Individual partition header with version, date, checksums
+    - Magic Value: 0xA324EB90 identifies valid partition headers
+    - Cumulative CRC: Each partition's CRC includes all previous partitions
+
+USAGE EXAMPLES:
+    Extract partitions from Ambarella firmware:
+        ./amba_fwpak.py -m m0100_cam.bin -x
+
+    Search and extract partitions (brute-force):
+        ./amba_fwpak.py -m m0100_cam.bin -s
+
+    Repack partitions into firmware:
+        ./amba_fwpak.py -m m0100_cam_new.bin -a
+
+WORKFLOW POSITION:
+    This tool is typically Step 2 for Ambarella camera modules:
+
+    [DJI Firmware .BIN] --> dji_xv4_fwcon.py (extract container)
+         |
+         +--> [Module m0100] --> amba_fwpak.py (this tool)
+                   |
+                   +--> [part_sys.a9s] --> amba_sys2elf.py (convert to ELF)
+                   |
+                   +--> [part_rfs.a9s] --> amba_romfs.py or ubifs tools
+                   |
+                   +--> [part_lnx.a9s] --> Extract Linux kernel
+                   |
+                   +--> [part_dsp_fw.a9s] --> DSP microcode analysis
+
+FILE FORMAT:
+    Ambarella firmware has this structure:
+    
+    +---------------------------+
+    | FwModA9Header (40 bytes)  |  Model name, version, total CRC
+    +---------------------------+
+    | FwModEntry[0] (8 bytes)   |  Partition 0 size and cumulative CRC
+    +---------------------------+
+    | FwModEntry[1] (8 bytes)   |  Partition 1 size and cumulative CRC
+    +---------------------------+
+    | ... more entries ...      |
+    +---------------------------+
+    | FwModA9PostHeader (60 b)  |  Partition sizes array
+    +---------------------------+
+    | FwModPartHeader (256 b)   |  Partition 0 header (magic: 0xA324EB90)
+    +---------------------------+
+    | Partition 0 Data          |  Actual partition content
+    +---------------------------+
+    | FwModPartHeader (256 b)   |  Partition 1 header
+    +---------------------------+
+    | Partition 1 Data          |
+    +---------------------------+
+    | ... more partitions ...   |
+    +---------------------------+
+
+PARTITION TYPES:
+    - sys (0): System Software - Main firmware executable
+    - dsp_fw (1): DSP uCode - Digital Signal Processor microcode
+    - rom_fw (2): System ROM Data - Read-only data
+    - lnx (3): Linux Kernel - Compressed Linux kernel image
+    - rfs (4): Linux Root FS - Root filesystem (ROMFS or UBIFS)
+
+CHECKSUM ALGORITHM:
+    Ambarella uses a variant of CRC32 with specific table and initialization.
+    The checksum is cumulative - each partition's CRC is computed with the
+    previous partition's CRC as the starting value. This allows verification
+    that no partitions have been reordered or modified.
+
+DEPENDENCIES:
+    - Standard Python 3 libraries only (no external dependencies)
+
+AUTHORS:
+    Mefistotelis @ Original Gangsters
+
+LICENSE:
+    GPL-3.0 - See LICENSE file for details
 """
 
 # Copyright (C) 2016,2017 Mefistotelis <mefistotelis@gmail.com>

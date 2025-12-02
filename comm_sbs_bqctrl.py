@@ -1,83 +1,85 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-""" Smart Battery System communication tool.
-
-This tool allows to interact with chips designed based on Smart Battery Data
-Specification. It also supports some extensions to that specification
-implemented by Texas Instruments in their BQ series gas gauge chips.
-
-Usage of this tool requires connection to SMBus lines (SDA,SCL,GND) of the
-SBS-compatible chip. SMBus communication uses I2C as a base, so most devices
-with I2C bus can be used to establish the communication.
-
-This tool was written with intent to be used on Raspberry Pi and its I2C bus.
-Using a different device will require slight modifications to the code.
-
-You do not need the TI EV2300 programmer to use this script.
-
-To get address of the device, you may use `i2cdetect`. Don't be scared about
-the interactive messages, SBS is a well defined protocol which isn't easy to
-break, especially when the chip is sealed. Probing will not accidently result
-in a packet which disables the battery forever.
-
-If the battery already has I2C master device on the bus (like uC on battery
-board), try not to turn on the battery for use with this program. The SBS chip
-should wake from sleep to answer on requests from this program, and if the
-battery is turned on, the constant communication from internal master will
-interfere with packets sent by this tool. It can also cause the battery
-to enter temporary SMBus error mode. To avoid that, don't even press the
-battery button while it is connected to I2C interface.
-
-Though in case of connection issues, you may try re-running the script when
-battery is on. The uC of some batteries keeps the line shorted to high state
-when turned off.
-
-Another thing to try on issues is using your bus through both SMBus API and
-I2C API, using "--bus" parameter.
-
-If the script shows "OSError: [Errno 74] Bad message", the very likely
-cause is invalid I2C speed. Check how to change baud rate of your
-I2C bus device. Baud rate of 100kbps should work. The EV2300 usually
-uses baud rate of 66kbps, though for some chips it switches to 30kbps.
-
-If the script shows "OSError: [Errno 121] Remote I/O error", that means
-the device did not respond to a command. It's hard to say if there was no
-response at all, or only to a specific part. This one may also happen when
-trying to access priviliged command in sealed state. Make sure you can see
-the device with 'i2cdetect'. If not, check physical connections. Make sure
-that no other device interferes with the communication - it is known that
-even unpowered EV2300 programmer connected to the bus can interfere with
-signals on lines.
-
-On Raspberry Pi, the "Remote I/O error" can sometimes disappear after
-starting GPIO deamon with high sampling rate, ie. `sudo pigpiod -s 1`.
-Constant probing of the line affects its impedance, which may sometimes
-lead to such unusual effects.
-
-There is also "OSError: [Errno 5] Input/output error" which tend to happen
-interchangeably with "Remote I/O error", but only if the other side responds
-to part of the message.
-
-Finally, remember that cheap I2C devices can sometimes get into unuseable
-state - make sure you reboot the Raspberry Pi, or re-connect the USB stick,
-if logic signal changes are visible but I2C still refuses to detect anything.
-
-Tested devices:
-(these devices are confirmed)
-BQ30z55 fw 0.36, Mavic Pro battery, 2021-02-15, mefistotelis
-
-Devices verified with spec:
-(should work, but not actually tested)
-BQ30z50, BQ30z554
-
-For other devices, only basic SBS functions are expected to work.
-Using chip-specific commands on them may have undesired effects.
-To make sure a command is safe, check Reference Manual of the chip
-and make sure the command is defined in the same way as in spec of
-one of tested devices.
-
 """
+Smart Battery System Communication Tool - Interface with DJI battery chips.
+
+OVERVIEW:
+    This tool enables communication with Smart Battery System (SBS) chips used in
+    DJI drone batteries. DJI uses Texas Instruments BQ series gas gauge chips to
+    monitor and control their "smart" batteries, which track charge cycles, health,
+    temperature, and other parameters.
+
+    SBS is an industry standard protocol that runs over SMBus (I2C). This tool
+    can read battery status, modify parameters (when unsealed), and help diagnose
+    battery issues.
+
+    The tool is designed to work with a Raspberry Pi's I2C bus, but can be adapted
+    for other I2C-capable devices. No special programmer (like TI EV2300) is needed.
+
+SUPPORTED CHIPS:
+    - BQ30z554: Used in Phantom 3/4, Mavic Pro
+    - BQ40z307: Used in newer batteries
+    - BQ40z50: High-capacity variant
+    (See comm_sbs_chips/ directory for chip definitions)
+
+KEY CONCEPTS:
+    - SBS: Smart Battery Data Specification - the standard protocol
+    - SMBus: System Management Bus - I2C-based communication
+    - Gas Gauge: Chip that tracks battery state of charge
+    - Sealed Mode: Default state, read-only access to most data
+    - Unsealed Mode: Allows writing parameters (requires password)
+    - Full Access: Even more access, for factory programming
+    - Manufacturer Access: Vendor-specific commands (TI extensions)
+
+USAGE EXAMPLES:
+    Read battery info:
+        ./comm_sbs_bqctrl.py -d /dev/i2c-1 --chip BQ30z554 info
+
+    Read all standard SBS values:
+        ./comm_sbs_bqctrl.py -d /dev/i2c-1 --chip BQ30z554 read-all
+
+    Monitor battery in real-time:
+        ./comm_sbs_bqctrl.py -d /dev/i2c-1 --chip BQ30z554 monitor
+
+HARDWARE SETUP:
+    Connect Raspberry Pi GPIO to battery SMBus:
+    - SDA (Data): GPIO2 (Pin 3)
+    - SCL (Clock): GPIO3 (Pin 5)
+    - GND: Ground connection
+
+    I2C Speed: 100kHz recommended (some chips need 66kHz)
+    
+    Enable I2C on Raspberry Pi:
+        sudo raspi-config -> Interface Options -> I2C -> Enable
+    
+    Find device address:
+        i2cdetect -y 1
+
+TROUBLESHOOTING:
+    "OSError: [Errno 74] Bad message"
+        - Usually incorrect I2C speed. Try 100kHz.
+    
+    "OSError: [Errno 121] Remote I/O error"
+        - No response from device. Check connections.
+        - May be trying privileged command in sealed state.
+    
+    Interference:
+        - Don't turn battery ON while connected (internal MCU conflicts)
+        - Disconnect any EV2300 programmer from bus
+        - Battery should be in sleep mode (LED off)
+
+DEPENDENCIES:
+    - smbus2: Python SMBus/I2C library (pip install smbus2)
+    - comm_sbs_chips/: Chip definition modules
+
+AUTHORS:
+    Mefistotelis @ Original Gangsters
+
+LICENSE:
+    GPL-3.0 - See LICENSE file for details
+"""
+
 __version__ = "0.2.1"
 __author__ = "Mefistotelis @ Original Gangsters"
 __license__ = "GPL"

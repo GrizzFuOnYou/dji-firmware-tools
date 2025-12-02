@@ -1,12 +1,92 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-""" DJI Firmware IMaH Un-signer and Decryptor tool.
+"""
+DJI IM*H Firmware Signature and Encryption Tool - Un-sign and decrypt firmware modules.
 
-Allows to decrypt and un-sign module from `.sig` file which starts with
-`IM*H`. Use this tool after untarring single modules from a firmware package,
-to decrypt its content.
+OVERVIEW:
+    This tool handles the IM*H (pronounced "IMAH" - Image Header) format used by DJI
+    to protect individual firmware modules with encryption and digital signatures.
+    After extracting modules from an xV4 container using dji_xv4_fwcon.py, many modules
+    will be in IM*H format (starting with the bytes "IM*H" or similar magic).
 
+    The IM*H format provides two layers of protection:
+    1. Encryption: AES encryption (CBC or CTR mode) to hide the contents
+    2. Signing: RSA signatures (PKCS#1 v1.5 or PSS) to verify authenticity
+
+    This tool can both decrypt/un-sign (extract) and encrypt/sign (create) IM*H files.
+    To modify DJI firmware, you typically un-sign a module, make changes, and re-sign it.
+    Note: For re-signing, you need private RSA keys (only community-generated keys included).
+
+KEY CONCEPTS:
+    - IM*H: Magic bytes "IM*H" identifying the format (may be "IM@H", "IMAH", etc.)
+    - Header Version: 0=2016 format, 1=2017, 2=2018 (different encryption modes)
+    - Scramble Key: AES key for content encryption (stored encrypted in header)
+    - Auth Key: RSA key for signature verification (public key embedded, private needed for signing)
+    - Enc Key: AES key for decrypting the scramble key (multiple versions exist)
+    - Chunk: Sub-module within an IM*H file (multiple chunks per file)
+    - Payload Digest: SHA256 hash of encrypted payload for integrity
+
+USAGE EXAMPLES:
+    Decrypt and extract a signed module:
+        ./dji_imah_fwsig.py -vv -u -i wm220_0801_v01.05.0640.sig
+
+    Re-encrypt and sign a modified module (requires private key):
+        ./dji_imah_fwsig.py -vv -s -i wm220_0801_v01.05.0640.sig
+
+    Decrypt using specific key selection:
+        ./dji_imah_fwsig.py -vv -k PUEK-2017-01 -u -i module.sig
+
+WORKFLOW POSITION:
+    This tool is typically Step 2 in the firmware analysis pipeline:
+
+    [DJI Firmware .BIN] --> dji_xv4_fwcon.py (Step 1: extract container)
+         |
+         +--> [Module m0801.sig] --> dji_imah_fwsig.py (this tool)
+                   |
+                   +--> [m0801_chunk1.bin] --> Further analysis
+                   |
+                   +--> [m0801_chunk2.bin] --> arm_bin2elf.py (for FC)
+
+FILE FORMAT:
+    IM*H files have the following structure:
+    
+    +---------------------------+
+    | ImgPkgHeader (192 bytes)  |  Magic, version, crypto info, checksums
+    +---------------------------+
+    | ImgChunkHeader[0] (32 b)  |  First chunk metadata
+    +---------------------------+
+    | ImgChunkHeader[1] (32 b)  |  Second chunk metadata
+    +---------------------------+
+    | ... more chunk headers    |
+    +---------------------------+
+    | RSA Signature (256 bytes) |  PKCS#1 or PSS signature of headers
+    +---------------------------+
+    | Encrypted Payload         |  All chunks concatenated, AES encrypted
+    +---------------------------+
+
+ENCRYPTION KEYS:
+    The tool contains multiple encryption and authentication keys discovered through
+    reverse engineering. Keys are identified by 4-character codes (FourCC):
+    - PUEK: Programming Update Encryption Key (main content encryption)
+    - RREK: R&D Encryption Key (encrypts RIEK in dev builds)
+    - RIEK: R&D Image Encryption Key (pre-production images)
+    - IAEK: Inner Image Encryption Key (nested encryption)
+    - PRAK: Provisioning RSA Auth Key (digital signature)
+    - SLAK/SLEK: Community-generated keys (for testing/custom firmware)
+
+AUTHENTICATION KEYS:
+    RSA keys for signature verification. Only public keys are embedded for most.
+    The SLAK/SLEK are community keys with private parts available for re-signing.
+
+DEPENDENCIES:
+    - pycryptodome: AES encryption/decryption, SHA256 hashing, RSA signatures
+
+AUTHORS:
+    Freek van Tienen, Jan Dumon, Mefistotelis @ Original Gangsters
+
+LICENSE:
+    GPL-3.0 - See LICENSE file for details
 """
 
 # Copyright (C) 2017  Freek van Tienen <freek.v.tienen@gmail.com>
@@ -497,32 +577,97 @@ RwjPBAdCSsU/99luMlK77z0=
 
 
 def eprint(*args, **kwargs):
+    """Print to stderr for error/warning messages.
+    
+    This function works exactly like print() but outputs to stderr instead of stdout.
+    Used throughout the codebase for error messages and warnings that should be
+    separated from normal program output.
+    
+    Args:
+        *args: Positional arguments passed to print()
+        **kwargs: Keyword arguments passed to print()
+    """
     print(*args, file=sys.stderr, **kwargs)
 
 
 class PlainCopyCipher:
+    """A no-op cipher that passes data through unchanged.
+    
+    This class provides the same interface as PyCryptodome cipher objects
+    but performs no actual encryption or decryption. It's used when:
+    1. A module is not encrypted (encryption type = 0)
+    2. We want to copy encrypted data without modification
+    
+    This allows the code to use a consistent cipher interface regardless
+    of whether encryption is actually being performed.
+    """
     def encrypt(self, plaintext):
+        """Return plaintext unchanged (no encryption)."""
         return plaintext
 
     def decrypt(self, ciphertext):
+        """Return ciphertext unchanged (no decryption)."""
         return ciphertext
 
 
 class ImgPkgHeader(LittleEndianStructure):
+    """Main header structure for IM*H firmware signature files.
+    
+    This 192-byte header appears at the start of .sig files and contains all
+    the metadata needed to decrypt and verify the firmware module. The structure
+    has evolved through several versions (2016, 2017, 2018) with different
+    encryption modes and checksum requirements.
+    
+    The IM*H format uses two-layer encryption:
+    1. The scram_key is encrypted with the enc_key (stored in the key database)
+    2. The payload is encrypted with the decrypted scram_key
+    
+    Digital signatures (RSA) are computed over the header and chunk headers
+    to prevent tampering. The auth_key identifies which RSA key was used.
+    
+    Attributes:
+        magic (c_char * 4): Magic identifier "IM*H" (or variants like "IM@H").
+        header_version (c_uint): Format version - 0=2016, 1=2017, 2=2018.
+        size (c_uint): Total file size (same as target_size typically).
+        reserved (c_ubyte * 4): Reserved bytes, should be zeros.
+        header_size (c_uint): Size of main header + all chunk headers.
+        signature_size (c_uint): RSA signature size, typically 256 bytes (2048-bit key).
+        payload_size (c_uint): Size of encrypted payload (all chunks combined).
+        target_size (c_uint): Expected total file size after processing.
+        os (c_ubyte): Target operating system identifier.
+        arch (c_ubyte): Target architecture identifier.
+        compression (c_ubyte): Compression type used on payload.
+        anti_version (c_ubyte): Anti-downgrade version byte.
+        auth_alg (c_uint): Authentication algorithm (PKCS#1 v1.5 vs PSS).
+        auth_key (c_char * 4): FourCC identifying the RSA authentication key.
+        enc_key (c_char * 4): FourCC identifying the AES encryption key.
+        scram_key (c_ubyte * 16): Encrypted scramble key (decrypt with enc_key).
+        name (c_char * 32): Target module name (null-terminated string).
+        type (c_char * 4): Module type identifier (used in version > 1).
+        version (c_uint): Module version number (major.minor.patch.build).
+        date (c_uint): Build date in packed BCD format (YYYYMMDD).
+        encr_cksum (c_uint): Checksum of encrypted data (version > 1 only).
+        reserved2 (c_ubyte * 16): Reserved bytes, should be zeros.
+        userdata (c_char * 16): User-defined data field.
+        entry (c_ubyte * 8): Entry point or special data.
+        plain_cksum (c_uint): Checksum of decrypted data (version > 1 only).
+        chunk_num (c_uint): Number of chunk headers following this header.
+        payload_digest (c_ubyte * 32): SHA256 hash of encrypted payload.
+    """
     _pack_ = 1
     _fields_ = [
-        ('magic', c_char * 4),              # 0 'IM*H'
-        ('header_version', c_uint),         # 4
-        ('size', c_uint),                   # 8
-        ('reserved', c_ubyte * 4),          # 12
+        ('magic', c_char * 4),              # 0 'IM*H' - identifies file format
+        ('header_version', c_uint),         # 4 - 0=2016, 1=2017, 2=2018 format
+        ('size', c_uint),                   # 8 - total file size
+        ('reserved', c_ubyte * 4),          # 12 - should be zeros
         ('header_size', c_uint),            # 16 Length of this header and following chunk headers
         ('signature_size', c_uint),         # 20 Length of RSA signature located after chunk headers
         ('payload_size', c_uint),           # 24 Length of the area after signature which contains data of all chunks
-        ('target_size', c_uint),            # 28
-        ('os', c_ubyte),                    # 32
-        ('arch', c_ubyte),                  # 33
-        ('compression', c_ubyte),           # 34
-        ('anti_version', c_ubyte),          # 35
+        ('target_size', c_uint),            # 28 - expected total size
+        ('os', c_ubyte),                    # 32 - target OS
+        ('arch', c_ubyte),                  # 33 - target architecture
+        ('compression', c_ubyte),           # 34 - compression type
+        ('anti_version', c_ubyte),          # 35 - anti-downgrade version
         ('auth_alg', c_uint),               # 36
         ('auth_key', c_char * 4),           # 40 Auth key identifier
         ('enc_key', c_char * 4),            # 44 Encryption key identifier
