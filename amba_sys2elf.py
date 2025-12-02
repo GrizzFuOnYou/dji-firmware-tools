@@ -1,62 +1,81 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-""" Ambarella Firmware SYS partiton to ELF converter.
+"""
+Ambarella System Partition to ELF Converter - Convert Ambarella system firmware to ELF.
 
- Converts "System Software" partition from Ambarella a7/a9 firmware
- from a binary image form into ELF format. The ELF format can be then
- easily disassembled, as most tools can read ELF files.
+OVERVIEW:
+    This tool converts the "System Software" partition from Ambarella A7/A9
+    camera firmware into ELF format for easier reverse engineering. The Ambarella
+    SoC powers the camera systems in many DJI drones (Phantom 3, Mavic, etc.).
 
- The Ambarella SDK contains an example system application, on which
- most products which use Ambarella SoC base their software.
- The application is linked and prepared like this:
-```
-  /usr/bin/arm-none-eabi-ld \
-   -EL -p --no-undefined --gc-sections --no-wchar-size-warning \
-   -nostdlib -nodefaultlibs -nostartfiles \
-   -L/usr/lib/arm-none-eabi/lib/armv7-ar/thumb/fpu \
-   -L/usr/lib/gcc/arm-none-eabi/4.9.3/armv7-ar/thumb/fpu \
-   -o out/amba_app.elf -T ../output/app/amba_app.lds \
-   --start-group --whole-archive \
-   ../output/lib/libapp.a \
-   ../output/lib/libapplib.a \
-   ../vendors/ambarella/lib/libaudio.a \
-   ../vendors/ambarella/lib/libaudio_sys.a \
-   ../output/lib/libbsp.a \
-   [...]
-   ../vendors/ambarella/lib/libthreadx.a \
-   ../vendors/ambarella/lib/libusb.a \
-   --no-whole-archive -lc -lnosys -lm -lgcc -lrdimon -lstdc++ \
-   --end-group \
-   app/AmbaVer_LinkInfo.o
+    After extracting partitions with amba_fwpak.py, the "part_sys.a9s" file
+    contains the main camera operating system. Converting it to ELF allows
+    analysis with standard tools like IDA Pro, Ghidra, and objdump.
 
-  /usr/bin/arm-none-eabi-nm -n -l out/amba_app.elf
+    This tool is similar to arm_bin2elf.py but specifically designed for
+    Ambarella system partitions, which have a known memory layout and
+    additional sections like DSP buffers.
 
-  /usr/bin/arm-none-eabi-objcopy -O binary out/amba_app.elf out/amba_app.bin
-```
- Note that the last command converts a linked ELF file into a binary memory
- image. The purpose of this tool is to revert that last operation, which makes
- it a lot easier to use tols like objdump or IDA Pro.
+KEY CONCEPTS:
+    - ThreadX RTOS: Ambarella systems run ThreadX real-time OS
+    - Memory Layout: Starts at 0x00000000 (differs from arm_bin2elf default)
+    - DSP Buffer: Special memory region for Digital Signal Processor
+    - Signature: Ambarella firmware often has ASCII signatures embedded
+    - BSS Sections: Multiple BSS regions for different RAM areas
 
- The script uses an ELF template, which was prepared from example Ambarella SDK
- application by the command (mock_sect.bin is a random file with 32 bytes size):
-```
-  echo "MockDataToUpdateUsingObjcopy" > mock_sect.bin
-  /usr/bin/arm-none-eabi-objcopy \
-   --remove-section ".comment" \
-   --update-section ".text=mock_sect.bin" --change-section-address ".text=0xa0001000" \
-   --change-section-address ".ARM.exidx=0xa0001020" \
-   --update-section ".dsp_buf=mock_sect.bin" --change-section-address ".dsp_buf=0xa0001020" \
-   --update-section ".data=mock_sect.bin" --change-section-address ".data=0xa0001040" \
-   --change-section-address "no_init=0xa0001060" \
-   --change-section-address ".bss.noinit=0xa0004000" \
-   --change-section-address ".bss=0xa03a8000" \
-   amba_app.elf amba_sys2elf_template.elf
-```
+USAGE EXAMPLES:
+    Convert system partition to ELF:
+        ./amba_sys2elf.py -e -p part_sys.a9s
 
- This tool really uses arm_bin2elf to do the work; it just sets optimal
- initial parameters for the Ambarella A9 firmware input.
+    Specify base address:
+        ./amba_sys2elf.py -e -b 0x00000000 -p part_sys.a9s
 
+    Define additional sections:
+        ./amba_sys2elf.py -e -s .bss2@0x1000000:0x100000 -p part_sys.a9s
+
+WORKFLOW POSITION:
+    This tool enables camera firmware analysis:
+
+    [DJI Firmware .BIN] --> dji_xv4_fwcon.py
+         |
+         +--> [Module m0100] --> amba_fwpak.py
+                   |
+                   +--> [part_sys.a9s] --> amba_sys2elf.py (this tool)
+                             |
+                             +--> [part_sys.elf] --> IDA Pro / Ghidra
+                                       |
+                                       +--> Analyze camera control
+                                       +--> Study image processing
+                                       +--> Find exposure algorithms
+
+MEMORY LAYOUT:
+    Typical Ambarella memory map (varies by model):
+    
+    0x00000000 - 0x00FFFFFF: System Software (this partition)
+    0x01000000 - 0x01FFFFFF: DSP memory
+    0x02000000 - 0x02FFFFFF: DSP buffer
+    0xC0000000 - 0xCFFFFFFF: Peripheral registers
+    0xE0000000 - 0xEFFFFFFF: High-speed RAM
+
+SECTIONS:
+    - .text: Executable ARM code (Thumb-2 instructions)
+    - .ARM.exidx: Exception handling index
+    - .dsp_buf: DSP shared buffer area
+    - .data: Initialized data
+    - .bss: Uninitialized data (not stored in file)
+    - .bss2+: Additional BSS regions for RAM mapping
+
+DEPENDENCIES:
+    - pyelftools: Custom version with ELF write support
+      Get from: https://github.com/mefistotelis/pyelftools.git
+      Clone to: ../pyelftools/
+
+AUTHORS:
+    Mefistotelis @ Original Gangsters
+
+LICENSE:
+    GPL-3.0 - See LICENSE file for details
 """
 
 # Copyright (C) 2016,2017 Mefistotelis <mefistotelis@gmail.com>

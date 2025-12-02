@@ -1,7 +1,58 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-""" DJI Flight Controller Firmware Parameters Array Editor.
+"""
+DJI Flight Controller Parameters Array Editor - Modify FC configuration values.
+
+OVERVIEW:
+    This tool edits the flight parameters array embedded in DJI Flight Controller
+    firmware. Unlike dji_flyc_hardcoder.py which finds scattered values throughout
+    the binary, this tool works with a structured parameter table that the FC uses
+    for runtime configuration.
+
+    The parameters control aspects like:
+    - Maximum altitude and speed limits
+    - GPS sensitivity and behavior
+    - Gimbal calibration values
+    - Sensor offsets and calibrations
+    - Flight mode configurations
+    - Battery thresholds
+
+    Parameters are stored in a table format with metadata about type, range,
+    default values, and descriptions. This tool can export these parameters
+    to JSON for editing and import them back.
+
+KEY CONCEPTS:
+    - Parameter Table: Structured array in FC firmware with config values
+    - Parameter Types: byte, ubyte, short, ushort, long, ulong, float
+    - Min/Max Values: Range constraints for each parameter
+    - Default Values: Factory settings for each parameter
+    - JSON Export: Human-readable format for editing parameters
+
+USAGE EXAMPLES:
+    Export parameters from FC firmware:
+        ./dji_flyc_param_ed.py -vv -e -m firmware.elf -o params.json
+
+    Import modified parameters back:
+        ./dji_flyc_param_ed.py -vv -u -m firmware.elf -i params.json
+
+WORKFLOW POSITION:
+    This tool is for advanced FC parameter modification:
+
+    [Decrypted FC binary] --> arm_bin2elf.py
+         |
+         +--> [firmware.elf] --> dji_flyc_param_ed.py (this tool)
+                   |
+                   +--> Export to JSON, edit, import back
+
+DEPENDENCIES:
+    - Standard Python 3 libraries only
+
+AUTHORS:
+    Mefistotelis @ Original Gangsters
+
+LICENSE:
+    GPL-3.0 - See LICENSE file for details
 """
 
 # Copyright (C) 2016,2017 Mefistotelis <mefistotelis@gmail.com>

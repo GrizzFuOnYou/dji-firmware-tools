@@ -1,10 +1,69 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-""" Utility to talk to DJI product via DUPC packets on serial interface.
+"""
+DJI Serial Communication Tool - Send DUML packets to DJI devices via serial.
 
- This script takes header fields and payload, and builds a proper DUPC
- packet from them. Then it sends it via given serial port and waits for an answer.
+OVERVIEW:
+    This tool enables direct communication with DJI products using the DUML
+    (DJI Unified Message Layer) protocol over a serial interface. It can send
+    commands to and receive responses from drones, controllers, and other
+    DJI hardware.
+
+    The tool builds properly formatted DUPC/DUML packets from command-line
+    arguments, sends them over a serial port (UART), and decodes the response.
+    This is useful for:
+    - Debugging drone communication
+    - Sending service commands
+    - Reading diagnostic information
+    - Firmware development
+
+KEY CONCEPTS:
+    - DUML: DJI Unified Message Layer - the protocol for device communication
+    - Serial Port: UART connection to DJI device (typically 115200 baud)
+    - Command Set: Category of commands (General, Camera, Gimbal, FC, etc.)
+    - Command ID: Specific command within a set
+    - Sender/Receiver: Module IDs for routing packets
+    - ACK: Acknowledgment type for request/response
+
+USAGE EXAMPLES:
+    Send a ping command:
+        ./comm_serialtalk.py /dev/ttyUSB0 -c 0 -i 0
+
+    Read FC version information:
+        ./comm_serialtalk.py /dev/ttyUSB0 -s FC -c 0 -i 1
+
+    Send command with payload:
+        ./comm_serialtalk.py /dev/ttyUSB0 -c 1 -i 2 -d "00010203"
+
+WORKFLOW POSITION:
+    This tool is for live device interaction:
+
+    [Computer] <--Serial--> [DJI Device]
+         |
+         +--> comm_serialtalk.py (this tool)
+                   |
+                   +--> Send command, receive response
+                   +--> Capture to PCap with comm_dat2pcap.py
+
+SERIAL CONNECTION:
+    Typical connection points for DUML access:
+    - Phantom 3/4: Debug UART pads on main board
+    - Mavic: USB debugging mode
+    - Spark: UART test points
+    
+    Settings: 115200 baud, 8N1 (8 data bits, no parity, 1 stop bit)
+
+DEPENDENCIES:
+    - pyserial: For serial port communication
+    - comm_dat2pcap: For packet parsing
+    - comm_mkdupc: For packet building
+
+AUTHORS:
+    Mefistotelis @ Original Gangsters
+
+LICENSE:
+    GPL-3.0 - See LICENSE file for details
 """
 
 # Copyright (C) 2018 Mefistotelis <mefistotelis@gmail.com>

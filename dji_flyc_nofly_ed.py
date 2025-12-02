@@ -1,10 +1,52 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-""" DJI Flight Controller Firmware No Fly Zones Editor.
+"""
+DJI Flight Controller No-Fly Zones Editor - Analyze geofencing data in FC firmware.
 
-    Note that the update function of this tool is unfinished; there was
-    no need to finish it as there are ways to disable all the NFZs.
+OVERVIEW:
+    This tool analyzes and edits the No-Fly Zone (NFZ) data embedded in DJI
+    Flight Controller firmware. DJI drones have geofencing that prevents flight
+    near airports, restricted areas, and other sensitive locations.
+
+    The NFZ data is stored as a list of zones with coordinates, radii, and
+    restriction types. This tool can export these zones to JSON for analysis
+    and theoretically import modified data back.
+
+IMPORTANT NOTES:
+    - The update/import function is incomplete and not recommended for use
+    - Modern DJI firmware downloads NFZ updates from servers
+    - Disabling NFZ is typically done through other methods
+    - This tool is primarily for research and understanding the format
+
+KEY CONCEPTS:
+    - NFZ (No-Fly Zone): Area where drone flight is restricted
+    - Zone Types: Airport, restricted, authorization required, etc.
+    - Coordinates: Latitude/longitude stored as int * 1000000
+    - Radius: Zone radius in meters
+    - Level: Restriction severity level
+
+USAGE EXAMPLES:
+    Export NFZ data to JSON:
+        ./dji_flyc_nofly_ed.py -vv -e -m firmware.elf -o nfz.json
+
+WORKFLOW POSITION:
+    This tool is for NFZ research:
+
+    [Decrypted FC binary] --> arm_bin2elf.py
+         |
+         +--> [firmware.elf] --> dji_flyc_nofly_ed.py (this tool)
+                   |
+                   +--> [nfz.json] - List of embedded zones
+
+DEPENDENCIES:
+    - Standard Python 3 libraries only
+
+AUTHORS:
+    Mefistotelis @ Original Gangsters
+
+LICENSE:
+    GPL-3.0 - See LICENSE file for details
 """
 
 # Copyright (C) 2016,2017 Mefistotelis <mefistotelis@gmail.com>
