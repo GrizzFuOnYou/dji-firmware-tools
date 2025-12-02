@@ -1,10 +1,93 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-""" DJI Mavic Flight Controller Firmware Crypto tool.
+"""
+DJI Mavic Flight Controller Firmware Crypto Tool - Decrypt/encrypt FC modules.
 
-Handles the second level encryption used for Flight Controller modules
-in Mavic and newer drones.
+OVERVIEW:
+    This tool handles the second-level encryption used specifically for Flight
+    Controller (FC) modules in Mavic and newer DJI drones. After extracting a
+    module from the xV4 container, some FC modules have an additional encryption
+    layer that this tool removes.
+
+    The encryption format is simpler than IM*H - it uses a fixed AES-128-CBC key
+    with a 41-byte header containing metadata and checksums. The decrypted output
+    is the raw ARM binary that can be further analyzed with arm_bin2elf.py.
+
+    Why second-level encryption? DJI adds this to Flight Controller firmware to
+    make reverse engineering harder. The FC controls critical flight safety
+    parameters like altitude limits, geofencing, and motor control.
+
+KEY CONCEPTS:
+    - EncHeader: 41-byte header with target, version, size, MD5, and CRC16
+    - Target: Hardware identifier combining "kind" (bits 0-4) and "model" (bits 5-7)
+    - Block Encryption: Data is encrypted in 256-byte blocks with AES-128-CBC
+    - MD5 Checksums: Both the encrypted file and decrypted data have MD5 verification
+    - CRC16: Header integrity check using non-standard CRC algorithm
+
+USAGE EXAMPLES:
+    Decrypt an encrypted FC module:
+        ./dji_mvfc_fwpak.py dec -i m0306_flight_controller.encrypted.bin
+
+    Encrypt a modified FC module:
+        ./dji_mvfc_fwpak.py enc -i m0306_fc.bin -V v00.01.00.00 -t 0306
+
+    Show info about an encrypted file:
+        ./dji_mvfc_fwpak.py info -i m0306_flight_controller.bin
+
+WORKFLOW POSITION:
+    This tool handles a specific encryption layer for FC modules:
+
+    [DJI Firmware .BIN] --> dji_xv4_fwcon.py (extract container)
+         |
+         +--> [Module m0306] --> dji_mvfc_fwpak.py (this tool)
+                   |
+                   +--> [Decrypted FC binary] --> arm_bin2elf.py
+                                |
+                                +--> [ELF file] --> IDA Pro / Ghidra
+
+FILE FORMAT:
+    Encrypted FC files have this structure:
+    
+    +---------------------------+
+    | EncHeader (41 bytes)      |  Target, version, size, data MD5, header CRC
+    +---------------------------+
+    | Encrypted Data            |  AES-128-CBC encrypted, 256-byte blocks
+    | (padded to 256 bytes)     |
+    +---------------------------+
+    | File MD5 (16 bytes)       |  MD5 of header + encrypted data
+    +---------------------------+
+
+    EncHeader fields:
+    - target (1 byte): kind|model encoded target
+    - unk0 (4 bytes): Always 0x01000001
+    - version (4 bytes): Firmware version (major.minor.patch.build)
+    - unk1 (1 byte): Always 0x01
+    - size (4 bytes): Decrypted data size
+    - unk2 (4 bytes): Always 0x00000000
+    - time (4 bytes): Unix timestamp
+    - unk3 (1 byte): Always 0x04
+    - md5 (16 bytes): MD5 of decrypted data
+    - crc16 (2 bytes): CRC16 of first 39 header bytes
+
+ENCRYPTION DETAILS:
+    - Algorithm: AES-128-CBC
+    - Key: Hardcoded 16-byte key (same across all Mavic FC firmware)
+    - IV: All zeros
+    - Block size: 256 bytes (NOT standard 16-byte AES blocks)
+    - Padding: If last block is < 256 bytes, it's padded with previous block data
+
+    The 256-byte block approach with CBC mode reset for each block is cryptographically
+    weak but matches DJI's implementation.
+
+DEPENDENCIES:
+    - pycryptodome: AES encryption/decryption
+
+AUTHORS:
+    Jan Dumon, Freek van Tienen @ Original Gangsters
+
+LICENSE:
+    GPL-3.0 - See LICENSE file for details
 """
 
 # Copyright (C) 2018  Jan Dumon <jan@crossbar.net>
@@ -39,28 +122,63 @@ from ctypes import c_char, c_int, c_ubyte, c_ushort, c_uint, c_ulonglong, c_floa
 from ctypes import memmove, addressof, sizeof, Array, LittleEndianStructure
 from os.path import basename
 
+# AES-128 encryption key for Mavic Flight Controller modules.
+# This key was discovered through reverse engineering and is the same key used
+# across all Mavic FC firmware. It provides obfuscation, not real security.
 encrypt_key = bytes([0x96, 0x70, 0x9a, 0xD3, 0x26, 0x67, 0x4A, 0xC3, 0x82, 0xB6, 0x69, 0x27, 0xE6, 0xd8, 0x84, 0x21])
+
+# AES-128 CBC initialization vector - all zeros.
+# Using a zero IV is cryptographically weak, but this matches DJI's implementation.
 encrypt_iv = bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 
 def eprint(*args, **kwargs):
-  print(*args, file=sys.stderr, **kwargs)
+    """Print to stderr for error/warning messages."""
+    print(*args, file=sys.stderr, **kwargs)
 
 class EncHeader(LittleEndianStructure):
+    """Header structure for encrypted Flight Controller firmware files.
+    
+    This 41-byte header contains metadata about the encrypted FC firmware,
+    including target hardware, version, timestamps, and checksums.
+    
+    Attributes:
+        target (c_ubyte): Target hardware identifier.
+            Bits 0-4 (kind): Hardware type (e.g., 3 = flight controller)
+            Bits 5-7 (model): Hardware variant
+        unk0 (c_uint): Unknown, always 0x01000001 in observed files.
+        version (c_ubyte * 4): Firmware version [build, patch, minor, major].
+            Stored in little-endian order.
+        unk1 (c_ubyte): Unknown, always 0x01.
+        size (c_uint): Size of decrypted data in bytes.
+        unk2 (c_uint): Unknown, always 0x00000000.
+        time (c_uint): Unix timestamp when firmware was built.
+        unk3 (c_ubyte): Unknown, always 0x04.
+        md5 (c_ubyte * 16): MD5 checksum of the decrypted data.
+            Includes padding if present (see note on padding behavior).
+        crc16 (c_ushort): CRC16 checksum of the first 39 bytes of this header.
+    
+    Note on padding behavior:
+        When encrypting, if the last block is less than 256 bytes, it's padded
+        with data from the previous encrypted block. The MD5 is computed AFTER
+        this padding is added, which is unusual. This appears to be a programming
+        quirk rather than intentional behavior.
+    """
     _pack_ = 1
     _fields_ = [
-        ('target', c_ubyte),           # 0
-        ('unk0', c_uint),              # 1  Always 0x01000001
-        ('version', c_ubyte * 4),      # 5
-        ('unk1', c_ubyte),             # 9  Always 0x01
-        ('size', c_uint),              # 10
-        ('unk2', c_uint),              # 14 Always 0x00000000
-        ('time', c_uint),              # 18
-        ('unk3', c_ubyte),             # 22 Always 0x04
-        ('md5', c_ubyte * 16),         # 23
-        ('crc16', c_ushort),           # 39 end is 41
-    ]
+        ('target', c_ubyte),           # 0: Target hardware (kind|model)
+        ('unk0', c_uint),              # 1: Always 0x01000001
+        ('version', c_ubyte * 4),      # 5: Version [build, patch, minor, major]
+        ('unk1', c_ubyte),             # 9: Always 0x01
+        ('size', c_uint),              # 10: Decrypted data size
+        ('unk2', c_uint),              # 14: Always 0x00000000
+        ('time', c_uint),              # 18: Unix timestamp
+        ('unk3', c_ubyte),             # 22: Always 0x04
+        ('md5', c_ubyte * 16),         # 23: MD5 of decrypted data
+        ('crc16', c_ushort),           # 39: CRC16 of first 39 bytes
+    ]                                  # Total: 41 bytes
 
     def __init__(self):
+        """Initialize with default "unknown" field values."""
         self.unk0 = 0x01000001
         self.unk1 = 0x01
         self.unk2 = 0x00000000

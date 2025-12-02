@@ -1,38 +1,95 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-""" Binary firmware with ARM code to ELF converter.
+"""
+ARM Binary to ELF Converter - Convert raw ARM binaries to analyzable ELF format.
 
- Converts BIN firmware with ARM code from a binary image form into
- ELF format. The ELF format can be then easily disassembled, as most
- tools can read ELF files.
+OVERVIEW:
+    This tool converts raw ARM binary firmware images into ELF (Executable and
+    Linkable Format) files. The ELF format is the standard executable format on
+    Linux and is well-supported by reverse engineering tools like IDA Pro, Ghidra,
+    and objdump.
 
- The BIN firmware is often linked and prepared like this:
+    Raw binary files (like decrypted Flight Controller firmware) are just memory
+    dumps with no structural information. This tool adds ELF headers and section
+    information, making the binary much easier to analyze.
 
-```
-  arm-none-eabi-ld \
-   -EL -p --no-undefined --gc-sections \
-   -nostdlib -nodefaultlibs -nostartfiles \
-   -o out/firmware.elf -T custom_sections.lds \
-   --start-group --whole-archive \
-   lib/libapp.a \
-   [...]
-   lib/libmain.a \
-   --no-whole-archive -lc -lnosys -lm -lgcc -lrdimon -lstdc++ \
-   --end-group
+    The conversion process automatically detects the .ARM.exidx section (exception
+    handling data), which helps identify where code (.text) ends and data (.data)
+    begins in the binary.
 
-  arm-none-eabi-nm -n -l out/firmware.elf
+WHY ELF CONVERSION MATTERS:
+    Raw binaries are difficult to analyze because:
+    - No section boundaries (can't tell code from data)
+    - No symbols or function names
+    - No relocation information
+    - Tools can't determine the base address automatically
+    
+    ELF files provide:
+    - Clear section boundaries (.text, .data, .bss)
+    - Proper base address for analysis
+    - Better disassembly quality in tools
+    - Support for adding symbols later
 
-  arm-none-eabi-objcopy -O binary out/firmware.elf out/firmware.bin
-```
+KEY CONCEPTS:
+    - Base Address: The memory address where the binary is loaded (default 0x1000000)
+    - .text Section: Executable code (ARM instructions)
+    - .ARM.exidx Section: Exception index - used to find section boundaries
+    - .data Section: Initialized data (follows .ARM.exidx)
+    - .bss Section: Uninitialized data (RAM, not stored in file)
+    - ELF Template: Pre-made ELF file used as starting point
 
- Note that the last command converts a linked ELF file into a binary
- memory image. The purpose of this tool is to revert that last operation,
- which makes it a lot easier to use tols like objdump or IDA Pro.
+USAGE EXAMPLES:
+    Convert binary to ELF with default settings:
+        ./arm_bin2elf.py -e -p m0306_fc.bin
 
- The script uses an ELF template, which was prepared especially for BINs
- within DJI firmwares. It was made by compiling an example mock firmware,
- and then stripping all the data with use of objcopy.
+    Specify base address:
+        ./arm_bin2elf.py -e -b 0x8000000 -p firmware.bin
+
+    Manually specify section boundaries:
+        ./arm_bin2elf.py -e -s .ARM.exidx@0x1200000:0x100 -p firmware.bin
+
+WORKFLOW POSITION:
+    This tool enables deep analysis of Flight Controller firmware:
+
+    [DJI Firmware .BIN] --> dji_xv4_fwcon.py (extract container)
+         |
+         +--> [Module m0306] --> dji_mvfc_fwpak.py (decrypt)
+                   |
+                   +--> [Decrypted FC] --> arm_bin2elf.py (this tool)
+                             |
+                             +--> [firmware.elf] --> IDA Pro / Ghidra
+                                       |
+                                       +--> Reverse engineer flight code
+                                       +--> Find altitude limits
+                                       +--> Analyze geofencing
+                                       +--> Study motor control
+
+SECTION DETECTION:
+    The tool automatically detects section boundaries by:
+    1. Finding .ARM.exidx section (exception handling index)
+       - This section has a distinctive structure that's easy to detect
+       - It's always located between .text and .data sections
+    2. Inferring .text section (all code before .ARM.exidx)
+    3. Inferring .data section (all data after .ARM.exidx)
+    4. Creating .bss section (uninitialized data, extends to address space limit)
+
+ELF TEMPLATE:
+    The tool uses arm_bin2elf_template.elf as a starting point. This template
+    contains properly formatted ELF headers for a 32-bit ARM little-endian
+    executable. The tool updates the section addresses and sizes based on
+    the input binary and detected boundaries.
+
+DEPENDENCIES:
+    - pyelftools: Custom version with ELF write support
+      Get from: https://github.com/mefistotelis/pyelftools.git
+      Clone to: ../pyelftools/ (one directory up)
+
+AUTHORS:
+    Mefistotelis @ Original Gangsters
+
+LICENSE:
+    GPL-3.0 - See LICENSE file for details
 """
 
 # Copyright (C) 2016,2017 Mefistotelis <mefistotelis@gmail.com>
